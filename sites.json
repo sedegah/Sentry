@@ -1,0 +1,8 @@
+{
+  "sites": [
+    { "name": "Tempest", "url": "https://tempest-ms28.onrender.com" },
+    { "name": "SceneRadar", "url": "https://sceneradar.onrender.com" },
+    { "name": "CodeCadence", "url": "https://codecadence.vercel.app" },
+    { "name": "DailyScope", "url": "https://daily-scope-news.vercel.app" }
+  ]
+}
