@@ -1,6 +1,6 @@
-# Sentry v2
+# Sentry 
 
-Sentry v2 monitors websites, logs status history in SQLite, and provides analytics in Streamlit.
+Sentry monitors websites, logs status history in SQLite, and provides analytics in Streamlit.
 
 ## Status model
 
