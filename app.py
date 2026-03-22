@@ -12,7 +12,6 @@ from monitor import check_all
 SITES_FILE = "sites.json"
 CHECK_INTERVAL_HOURS = 2
 REFRESH_INTERVAL_SECONDS = 60
-STATUS_VALUE = {"active": 1.0, "asleep": 0.5, "inactive": 0.0}
 
 
 def load_sites() -> list[dict[str, str]]:
@@ -33,7 +32,6 @@ def utc_now() -> datetime:
 def parse_history(history: pd.DataFrame) -> pd.DataFrame:
     parsed = history.copy()
     parsed["timestamp"] = pd.to_datetime(parsed["timestamp"], errors="coerce", utc=True)
-    parsed["status_value"] = parsed["status"].map(STATUS_VALUE)
     return parsed.dropna(subset=["timestamp"])
 
 
@@ -62,6 +60,37 @@ def inactive_events(site_history: pd.DataFrame) -> int:
     series = site_history.sort_values("timestamp")["status"].fillna("unknown")
     starts = (series == "inactive") & (series.shift(1) != "inactive")
     return int(starts.sum())
+
+
+def asleep_events(site_history: pd.DataFrame) -> int:
+    if site_history.empty:
+        return 0
+    series = site_history.sort_values("timestamp")["status"].fillna("unknown")
+    starts = (series == "asleep") & (series.shift(1) != "asleep")
+    return int(starts.sum())
+
+
+def build_status_mix(history_view: pd.DataFrame) -> pd.DataFrame:
+    if history_view.empty:
+        return pd.DataFrame()
+    rows = []
+    for site in sorted(history_view["name"].dropna().unique()):
+        site_hist = history_view[history_view["name"] == site]
+        total = len(site_hist)
+        if total == 0:
+            continue
+        status_counts = site_hist["status"].value_counts(dropna=False)
+        rows.append(
+            {
+                "site": site,
+                "checks": int(total),
+                "active_pct": round(float(status_counts.get("active", 0) / total * 100), 2),
+                "asleep_pct": round(float(status_counts.get("asleep", 0) / total * 100), 2),
+                "inactive_pct": round(float(status_counts.get("inactive", 0) / total * 100), 2),
+                "unknown_pct": round(float(status_counts.get("unknown", 0) / total * 100), 2),
+            }
+        )
+    return pd.DataFrame(rows).sort_values(["inactive_pct", "asleep_pct"], ascending=[False, False]) if rows else pd.DataFrame()
 
 
 st.set_page_config(page_title="Sentry Analytics", layout="wide")
@@ -161,36 +190,75 @@ st.subheader("Service Reliability Summary")
 rows = []
 for site in sorted(history_view["name"].dropna().unique()):
     site_hist = history_view[history_view["name"] == site]
+    latency_values = site_hist["latency"].dropna()
+    active_ratio = float((site_hist["status"] == "active").mean()) if len(site_hist) else 0.0
+    inactive_count = inactive_events(site_hist)
+    asleep_count = asleep_events(site_hist)
     rows.append(
         {
             "site": site,
             "checks": int(len(site_hist)),
-            "uptime_percent": round(uptime_percent(site_hist), 2),
-            "inactive_events": inactive_events(site_hist),
-            "avg_latency_s": round(float(site_hist["latency"].dropna().mean()), 3) if site_hist["latency"].notna().any() else None,
-            "p95_latency_s": round(float(site_hist["latency"].dropna().quantile(0.95)), 3) if site_hist["latency"].notna().any() else None,
+            "uptime_percent": round(active_ratio * 100, 2),
+            "active_checks": int((site_hist["status"] == "active").sum()),
+            "inactive_events": inactive_count,
+            "asleep_events": asleep_count,
+            "issue_events_total": inactive_count + asleep_count,
+            "error_budget_burn_percent": round((1.0 - active_ratio) * 100, 2),
+            "avg_latency_s": round(float(latency_values.mean()), 3) if not latency_values.empty else None,
+            "p50_latency_s": round(float(latency_values.quantile(0.50)), 3) if not latency_values.empty else None,
+            "p95_latency_s": round(float(latency_values.quantile(0.95)), 3) if not latency_values.empty else None,
+            "max_latency_s": round(float(latency_values.max()), 3) if not latency_values.empty else None,
             "last_status": site_hist.sort_values("timestamp").iloc[-1]["status"],
             "last_seen": site_hist["timestamp"].max(),
         }
     )
-summary = pd.DataFrame(rows).sort_values(["uptime_percent", "checks"], ascending=[False, False]) if rows else pd.DataFrame()
+summary = (
+    pd.DataFrame(rows).sort_values(["uptime_percent", "checks"], ascending=[False, False])
+    if rows
+    else pd.DataFrame()
+)
 st.dataframe(summary, use_container_width=True)
 
-st.subheader("Uptime Trend")
-for site in sorted(history_view["name"].dropna().unique()):
-    site_data = history_view[history_view["name"] == site].sort_values("timestamp")
-    st.caption(f"{site} status over time")
-    st.line_chart(site_data.set_index("timestamp")[["status_value"]])
+if not summary.empty:
+    st.subheader("Operational Analytics")
+    total_checks = int(summary["checks"].sum())
+    total_issues = int(summary["issue_events_total"].sum())
+    fleet_uptime = round(float(summary["active_checks"].sum() / total_checks * 100), 2) if total_checks else 0.0
+    least_reliable = summary.sort_values(["uptime_percent", "checks"], ascending=[True, False]).iloc[0]["site"]
+    noisiest = summary.sort_values(["issue_events_total", "inactive_events"], ascending=[False, False]).iloc[0]["site"]
 
-st.subheader("Latency Trend")
-latency_data = history_view.dropna(subset=["latency"])
-if latency_data.empty:
-    st.info("No latency values in this window.")
-else:
-    for site in sorted(latency_data["name"].dropna().unique()):
-        site_latency = latency_data[latency_data["name"] == site].sort_values("timestamp")
-        st.caption(f"{site} latency")
-        st.line_chart(site_latency.set_index("timestamp")[["latency"]])
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Fleet Uptime %", fleet_uptime)
+    g2.metric("Total Checks", total_checks)
+    g3.metric("Issue Events", total_issues)
+    g4.metric("Most Incident-Prone Site", noisiest)
+
+    st.caption(f"Lowest uptime in this window: {least_reliable}")
+
+    top_risk = summary.sort_values(["uptime_percent", "issue_events_total"], ascending=[True, False]).head(5)[
+        ["site", "uptime_percent", "error_budget_burn_percent", "issue_events_total", "last_status", "last_seen"]
+    ]
+    st.markdown("**Top Risk Sites (action priority)**")
+    st.dataframe(top_risk, use_container_width=True)
+
+    status_mix = build_status_mix(history_view)
+    st.markdown("**Status Distribution by Site (%)**")
+    if status_mix.empty:
+        st.info("No status distribution data is available in this window.")
+    else:
+        st.dataframe(status_mix, use_container_width=True)
+
+    latency_rank = summary.dropna(subset=["p95_latency_s"]).sort_values(
+        ["p95_latency_s", "avg_latency_s"], ascending=[False, False]
+    )
+    st.markdown("**Latency Risk Ranking (P95)**")
+    if latency_rank.empty:
+        st.info("No latency values are available for ranking in this window.")
+    else:
+        st.dataframe(
+            latency_rank[["site", "avg_latency_s", "p50_latency_s", "p95_latency_s", "max_latency_s", "last_status"]],
+            use_container_width=True,
+        )
 
 st.subheader("Recent Ping Log")
 recent = history.sort_values("timestamp", ascending=False).head(100)
