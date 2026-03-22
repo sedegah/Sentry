@@ -198,12 +198,10 @@ for site in sorted(history_view["name"].dropna().unique()):
         {
             "site": site,
             "checks": int(len(site_hist)),
-            "uptime_percent": round(active_ratio * 100, 2),
             "active_checks": int((site_hist["status"] == "active").sum()),
             "inactive_events": inactive_count,
             "asleep_events": asleep_count,
             "issue_events_total": inactive_count + asleep_count,
-            "error_budget_burn_percent": round((1.0 - active_ratio) * 100, 2),
             "avg_latency_s": round(float(latency_values.mean()), 3) if not latency_values.empty else None,
             "p50_latency_s": round(float(latency_values.quantile(0.50)), 3) if not latency_values.empty else None,
             "p95_latency_s": round(float(latency_values.quantile(0.95)), 3) if not latency_values.empty else None,
@@ -213,7 +211,7 @@ for site in sorted(history_view["name"].dropna().unique()):
         }
     )
 summary = (
-    pd.DataFrame(rows).sort_values(["uptime_percent", "checks"], ascending=[False, False])
+    pd.DataFrame(rows).sort_values(["checks", "active_checks"], ascending=[False, False])
     if rows
     else pd.DataFrame()
 )
@@ -223,23 +221,12 @@ if not summary.empty:
     st.subheader("Operational Analytics")
     total_checks = int(summary["checks"].sum())
     total_issues = int(summary["issue_events_total"].sum())
-    fleet_uptime = round(float(summary["active_checks"].sum() / total_checks * 100), 2) if total_checks else 0.0
-    least_reliable = summary.sort_values(["uptime_percent", "checks"], ascending=[True, False]).iloc[0]["site"]
     noisiest = summary.sort_values(["issue_events_total", "inactive_events"], ascending=[False, False]).iloc[0]["site"]
 
-    g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Fleet Uptime %", fleet_uptime)
-    g2.metric("Total Checks", total_checks)
-    g3.metric("Issue Events", total_issues)
-    g4.metric("Most Incident-Prone Site", noisiest)
-
-    st.caption(f"Lowest uptime in this window: {least_reliable}")
-
-    top_risk = summary.sort_values(["uptime_percent", "issue_events_total"], ascending=[True, False]).head(5)[
-        ["site", "uptime_percent", "error_budget_burn_percent", "issue_events_total", "last_status", "last_seen"]
-    ]
-    st.markdown("**Top Risk Sites (action priority)**")
-    st.dataframe(top_risk, use_container_width=True)
+    g1, g2, g3 = st.columns(3)
+    g1.metric("Total Checks", total_checks)
+    g2.metric("Issue Events", total_issues)
+    g3.metric("Most Incident-Prone Site", noisiest)
 
     status_mix = build_status_mix(history_view)
     st.markdown("**Status Distribution by Site (%)**")
